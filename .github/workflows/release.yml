@@ -32,12 +32,5 @@ jobs:
           VERSION="${TAG#v}"
           gh release create "$TAG" \
             --title "PhantomHeads $TAG" \
-            --notes "## PhantomHeads $TAG
-
-**Compatible with:** Paper 1.21.11 and Paper 26.x (MC 26.1+)
-
-### Installation
-Drop \`PhantomHeads-${VERSION}.jar\` into your \`plugins/\` folder and restart.
-
-See the [README](https://github.com/${{ github.repository }}#readme) for full documentation." \
+            --notes "Compatible with Paper 1.21.11 and Paper 26.x (MC 26.1+). Drop the JAR into your plugins/ folder and restart." \
             "target/PhantomHeads-${VERSION}.jar"
