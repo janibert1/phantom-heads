@@ -4,25 +4,28 @@ import nl.jdries.phantomheads.model.FloatingHead;
 import org.bukkit.Location;
 import org.bukkit.Particle;
 import org.bukkit.World;
+import org.bukkit.entity.Player;
+
+import java.util.List;
 
 /**
- * Spawns ambient (continuous) and click (one-shot) particle effects around a FloatingHead.
  * Ambient effects: circle, helix, rising, spiral, pulse, constellation, magic_circle, atom
  * Click effects:   burst, firework, shockwave, fountain, vortex, star_burst, heart
+ *
+ * Particle type is resolved once and cached on FloatingHead — no string lookup per tick.
+ * Ambient calls receive the current viewer list so particles are skipped with no audience.
  */
 public final class ParticleEngine {
 
     private ParticleEngine() {}
 
-    // -------------------------------------------------------------------------
-    // Ambient effects — called every animation tick
-    // -------------------------------------------------------------------------
+    // ── Ambient ───────────────────────────────────────────────────────────────
 
-    public static void spawnAmbient(FloatingHead head, double tick) {
+    public static void spawnAmbient(FloatingHead head, double tick, List<Player> viewers) {
         Location loc = head.getLocation();
         if (loc == null || loc.getWorld() == null) return;
 
-        Particle particle = resolve(head.getParticleType());
+        Particle particle = resolveParticle(head);
         int count = Math.max(1, (int) (head.getParticleDensity() * 3));
 
         switch (head.getAmbientEffect().toLowerCase()) {
@@ -37,6 +40,42 @@ public final class ParticleEngine {
             default              -> circle(loc, particle, count, tick);
         }
     }
+
+    // ── Click ─────────────────────────────────────────────────────────────────
+
+    public static void spawnClick(FloatingHead head) {
+        Location loc = head.getLocation();
+        if (loc == null || loc.getWorld() == null) return;
+        Particle p = resolveParticle(head);
+
+        switch (head.getClickEffect().toLowerCase()) {
+            case "burst"      -> burst(loc, p);
+            case "firework"   -> firework(loc, p);
+            case "shockwave"  -> shockwave(loc, p);
+            case "fountain"   -> fountain(loc, p);
+            case "vortex"     -> vortex(loc, p);
+            case "star_burst" -> starBurst(loc, p);
+            case "heart"      -> heart(loc, p);
+            default           -> burst(loc, p);
+        }
+    }
+
+    // ── Particle resolution (cached) ──────────────────────────────────────────
+
+    private static Particle resolveParticle(FloatingHead head) {
+        Particle cached = head.getCachedParticle();
+        if (cached != null) return cached;
+        Particle resolved;
+        try {
+            resolved = Particle.valueOf(head.getParticleType().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            resolved = Particle.FLAME;
+        }
+        head.setCachedParticle(resolved);
+        return resolved;
+    }
+
+    // ── Ambient shapes ────────────────────────────────────────────────────────
 
     private static void circle(Location loc, Particle p, int count, double tick) {
         double r = 0.7;
@@ -57,10 +96,10 @@ public final class ParticleEngine {
 
     private static void rising(Location loc, Particle p, int count) {
         for (int i = 0; i < count; i++) {
-            double dx = (Math.random() - 0.5) * 0.6;
-            double dz = (Math.random() - 0.5) * 0.6;
-            double dy = Math.random() * 1.3;
-            spawn(loc.getWorld(), loc.getX() + dx, loc.getY() + dy, loc.getZ() + dz, p);
+            spawn(loc.getWorld(),
+                    loc.getX() + (Math.random() - 0.5) * 0.6,
+                    loc.getY() + Math.random() * 1.3,
+                    loc.getZ() + (Math.random() - 0.5) * 0.6, p);
         }
     }
 
@@ -69,14 +108,13 @@ public final class ParticleEngine {
         for (int i = 0; i < steps; i++) {
             double angle  = tick + (2 * Math.PI * i / steps);
             double radius = 0.1 + i * 0.03;
-            double dy     = (i * 0.04) - 0.5;
-            spawn(loc.getWorld(), loc.getX() + Math.cos(angle) * radius, loc.getY() + dy, loc.getZ() + Math.sin(angle) * radius, p);
+            spawn(loc.getWorld(), loc.getX() + Math.cos(angle) * radius, loc.getY() + (i * 0.04) - 0.5, loc.getZ() + Math.sin(angle) * radius, p);
         }
     }
 
     private static void pulse(Location loc, Particle p, int count, double tick) {
-        double r    = 0.5 + 0.3 * Math.sin(tick * 0.3);
-        int    pts  = count * 2;
+        double r   = 0.5 + 0.3 * Math.sin(tick * 0.3);
+        int    pts = count * 2;
         for (int i = 0; i < pts; i++) {
             double angle = 2 * Math.PI * i / pts;
             spawn(loc.getWorld(), loc.getX() + Math.cos(angle) * r, loc.getY() + 0.3, loc.getZ() + Math.sin(angle) * r, p);
@@ -86,9 +124,8 @@ public final class ParticleEngine {
     private static void constellation(Location loc, Particle p) {
         double[][] stars = {{0.6,0},{-0.6,0},{0,0.6},{0,-0.6},{0.4,0.4},{-0.4,0.4}};
         for (double[] star : stars) {
-            if (Math.random() < 0.3) {
+            if (Math.random() < 0.3)
                 spawn(loc.getWorld(), loc.getX() + star[0], loc.getY() + 0.5, loc.getZ() + star[1], p);
-            }
         }
     }
 
@@ -105,73 +142,47 @@ public final class ParticleEngine {
     }
 
     private static void atom(Location loc, Particle p, double tick) {
-        // Three orbital rings on different planes
-        double[][] axes = {{1, 0, 0}, {0.71, 0, 0.71}, {0, 1, 0}};
+        double[][] axes = {{1,0,0},{0.71,0,0.71},{0,1,0}};
         for (double[] ax : axes) {
             double angle = tick * 0.8;
-            double dx = Math.cos(angle) * ax[0] * 0.7;
-            double dy = Math.sin(angle) * ax[1] * 0.7;
-            double dz = Math.cos(angle) * ax[2] * 0.7;
-            spawn(loc.getWorld(), loc.getX() + dx, loc.getY() + 0.5 + dy, loc.getZ() + dz, p);
+            spawn(loc.getWorld(),
+                    loc.getX() + Math.cos(angle) * ax[0] * 0.7,
+                    loc.getY() + 0.5 + Math.sin(angle) * ax[1] * 0.7,
+                    loc.getZ() + Math.cos(angle) * ax[2] * 0.7, p);
         }
         if (Math.random() < 0.4) spawn(loc.getWorld(), loc.getX(), loc.getY() + 0.5, loc.getZ(), p);
     }
 
-    // -------------------------------------------------------------------------
-    // Click effects — one-shot on player interaction
-    // -------------------------------------------------------------------------
-
-    public static void spawnClick(FloatingHead head) {
-        Location loc = head.getLocation();
-        if (loc == null || loc.getWorld() == null) return;
-        Particle p = resolve(head.getParticleType());
-
-        switch (head.getClickEffect().toLowerCase()) {
-            case "burst"      -> burst(loc, p);
-            case "firework"   -> firework(loc, p);
-            case "shockwave"  -> shockwave(loc, p);
-            case "fountain"   -> fountain(loc, p);
-            case "vortex"     -> vortex(loc, p);
-            case "star_burst" -> starBurst(loc, p);
-            case "heart"      -> heart(loc, p);
-            default           -> burst(loc, p);
-        }
-    }
+    // ── Click shapes ──────────────────────────────────────────────────────────
 
     private static void burst(Location loc, Particle p) {
-        loc.getWorld().spawnParticle(p, loc.clone().add(0, 0.5, 0), 60, 0.5, 0.5, 0.5, 0.15);
+        loc.getWorld().spawnParticle(p, loc.clone().add(0,0.5,0), 60, 0.5, 0.5, 0.5, 0.15);
     }
 
     private static void firework(Location loc, Particle p) {
         for (int i = 0; i < 8; i++) {
             double angle = 2 * Math.PI * i / 8;
-            Location pt = loc.clone().add(Math.cos(angle) * 0.5, 0.5, Math.sin(angle) * 0.5);
-            loc.getWorld().spawnParticle(p, pt, 10, 0.1, 0.4, 0.1, 0.1);
+            loc.getWorld().spawnParticle(p, loc.clone().add(Math.cos(angle)*0.5, 0.5, Math.sin(angle)*0.5), 10, 0.1, 0.4, 0.1, 0.1);
         }
     }
 
     private static void shockwave(Location loc, Particle p) {
-        int steps = 32;
-        for (int i = 0; i < steps; i++) {
-            double angle = 2 * Math.PI * i / steps;
-            loc.getWorld().spawnParticle(p, loc.clone().add(Math.cos(angle) * 1.2, 0.1, Math.sin(angle) * 1.2), 3, 0, 0, 0, 0);
+        for (int i = 0; i < 32; i++) {
+            double angle = 2 * Math.PI * i / 32;
+            loc.getWorld().spawnParticle(p, loc.clone().add(Math.cos(angle)*1.2, 0.1, Math.sin(angle)*1.2), 3, 0, 0, 0, 0);
         }
     }
 
     private static void fountain(Location loc, Particle p) {
-        for (int i = 0; i < 30; i++) {
-            double dx = (Math.random() - 0.5) * 0.4;
-            double dz = (Math.random() - 0.5) * 0.4;
-            loc.getWorld().spawnParticle(p, loc.clone().add(0, 0.3, 0), 1, dx, 0.5, dz, 0);
-        }
+        for (int i = 0; i < 30; i++)
+            loc.getWorld().spawnParticle(p, loc.clone().add(0,0.3,0), 1, (Math.random()-0.5)*0.4, 0.5, (Math.random()-0.5)*0.4, 0);
     }
 
     private static void vortex(Location loc, Particle p) {
         for (int i = 0; i < 40; i++) {
             double angle = (2 * Math.PI * i / 40) + i * 0.15;
-            double r  = 0.1 + i * 0.025;
-            double dy = (i * 0.05) - 0.5;
-            loc.getWorld().spawnParticle(p, loc.clone().add(Math.cos(angle) * r, dy, Math.sin(angle) * r), 1, 0, 0, 0, 0);
+            double r     = 0.1 + i * 0.025;
+            loc.getWorld().spawnParticle(p, loc.clone().add(Math.cos(angle)*r, (i*0.05)-0.5, Math.sin(angle)*r), 1, 0,0,0,0);
         }
     }
 
@@ -180,33 +191,21 @@ public final class ParticleEngine {
             double angle = 2 * Math.PI * ray / 5;
             for (int j = 0; j < 8; j++) {
                 double r = j * 0.15;
-                loc.getWorld().spawnParticle(p, loc.clone().add(Math.cos(angle) * r, 0.5 + j * 0.05, Math.sin(angle) * r), 1, 0, 0, 0, 0);
+                loc.getWorld().spawnParticle(p, loc.clone().add(Math.cos(angle)*r, 0.5+j*0.05, Math.sin(angle)*r), 1,0,0,0,0);
             }
         }
     }
 
     private static void heart(Location loc, Particle p) {
-        int steps = 24;
-        for (int i = 0; i < steps; i++) {
-            double t  = 2 * Math.PI * i / steps;
+        for (int i = 0; i < 24; i++) {
+            double t  = 2 * Math.PI * i / 24;
             double hx = 16 * Math.pow(Math.sin(t), 3);
-            double hz = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
-            loc.getWorld().spawnParticle(p, loc.clone().add(hx * 0.042, 0.5, hz * 0.042), 1, 0, 0, 0, 0);
+            double hz = 13*Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t);
+            loc.getWorld().spawnParticle(p, loc.clone().add(hx*0.042, 0.5, hz*0.042), 1,0,0,0,0);
         }
     }
-
-    // -------------------------------------------------------------------------
 
     private static void spawn(World w, double x, double y, double z, Particle p) {
         w.spawnParticle(p, x, y, z, 1, 0, 0, 0, 0);
-    }
-
-    private static Particle resolve(String name) {
-        if (name == null) return Particle.FLAME;
-        try {
-            return Particle.valueOf(name.toUpperCase());
-        } catch (IllegalArgumentException e) {
-            return Particle.FLAME;
-        }
     }
 }

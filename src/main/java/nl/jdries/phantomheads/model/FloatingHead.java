@@ -2,12 +2,12 @@ package nl.jdries.phantomheads.model;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.Particle;
 import org.bukkit.World;
 import org.bukkit.configuration.ConfigurationSection;
-import org.bukkit.entity.ArmorStand;
-import org.bukkit.entity.TextDisplay;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class FloatingHead {
 
@@ -16,11 +16,11 @@ public class FloatingHead {
     private String world;
     private double x, y, z;
     private float yaw;
-    private String texture;          // base64 string or "%player_name%"
+    private String texture;
     private boolean enabled;
     private boolean hologramEnabled;
     private List<String> lines;
-    private String animationStyle;   // "FLOATING" | "SLERPING"
+    private String animationStyle;
     private double speedMultiplier;
     private String particleType;
     private double particleDensity;
@@ -31,15 +31,20 @@ public class FloatingHead {
     private List<String> messages;
     private int cooldownSeconds;
 
-    // --- Runtime (not saved) ---
-    private transient ArmorStand skullStand;
-    private transient List<TextDisplay> holoDisplays = new ArrayList<>();
-    // Per-player skull stands for %player_name% dynamic texture
-    private transient Map<UUID, ArmorStand> personalStands = new HashMap<>();
-    private transient Map<UUID, Long> cooldowns = new HashMap<>();
+    // --- Runtime packet entity IDs (never saved) ---
+    private transient int skullEntityId = -1;
+    private transient final List<Integer> holoEntityIds = new ArrayList<>();
+    // Per-viewer skull for %player_name% dynamic texture
+    private transient final Map<UUID, Integer> personalEntityIds = new ConcurrentHashMap<>();
+    // Cooldowns
+    private transient final Map<UUID, Long> cooldowns = new HashMap<>();
     // Animation state
     private transient double animTick = 0.0;
     private transient double baseY;
+    // PAPI change-detection cache — last resolved text per holo line
+    private transient final List<String> cachedResolvedLines = new ArrayList<>();
+    // Resolved Particle enum, cached once on load/create so it's not looked up every tick
+    private transient Particle cachedParticle = null;
 
     public FloatingHead(String id) {
         this.id = id;
@@ -85,6 +90,32 @@ public class FloatingHead {
     public boolean isDynamicTexture() {
         return "%player_name%".equalsIgnoreCase(texture);
     }
+
+    // --- Entity ID helpers ---
+
+    public int getSkullEntityId()             { return skullEntityId; }
+    public void setSkullEntityId(int id)      { this.skullEntityId = id; }
+    public List<Integer> getHoloEntityIds()   { return holoEntityIds; }
+    public Map<UUID, Integer> getPersonalEntityIds() { return personalEntityIds; }
+
+    // --- PAPI line cache ---
+
+    public String getCachedResolvedLine(int index) {
+        if (index < 0 || index >= cachedResolvedLines.size()) return null;
+        return cachedResolvedLines.get(index);
+    }
+
+    public void setCachedResolvedLine(int index, String text) {
+        while (cachedResolvedLines.size() <= index) cachedResolvedLines.add(null);
+        cachedResolvedLines.set(index, text);
+    }
+
+    public void clearResolvedLineCache() { cachedResolvedLines.clear(); }
+
+    // --- Particle cache ---
+
+    public Particle getCachedParticle()             { return cachedParticle; }
+    public void setCachedParticle(Particle particle) { this.cachedParticle = particle; }
 
     // --- YAML persistence ---
 
@@ -137,59 +168,52 @@ public class FloatingHead {
 
     // --- Getters / setters ---
 
-    public String getId() { return id; }
-    public String getWorld() { return world; }
-    public double getX() { return x; }
-    public double getY() { return y; }
-    public double getZ() { return z; }
-    public float getYaw() { return yaw; }
+    public String getId()       { return id; }
+    public String getWorld()    { return world; }
+    public double getX()        { return x; }
+    public double getY()        { return y; }
+    public double getZ()        { return z; }
+    public float getYaw()       { return yaw; }
 
-    public String getTexture() { return texture; }
-    public void setTexture(String texture) { this.texture = texture; }
+    public String getTexture()              { return texture; }
+    public void setTexture(String texture)  { this.texture = texture; }
 
-    public boolean isEnabled() { return enabled; }
+    public boolean isEnabled()              { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
 
-    public boolean isHologramEnabled() { return hologramEnabled; }
-    public void setHologramEnabled(boolean v) { this.hologramEnabled = v; }
+    public boolean isHologramEnabled()              { return hologramEnabled; }
+    public void setHologramEnabled(boolean v)       { this.hologramEnabled = v; }
 
-    public List<String> getLines() { return lines; }
+    public List<String> getLines()          { return lines; }
 
-    public String getAnimationStyle() { return animationStyle; }
-    public void setAnimationStyle(String s) { this.animationStyle = s; }
+    public String getAnimationStyle()               { return animationStyle; }
+    public void setAnimationStyle(String s)         { this.animationStyle = s; }
 
-    public double getSpeedMultiplier() { return speedMultiplier; }
-    public void setSpeedMultiplier(double v) { this.speedMultiplier = v; }
+    public double getSpeedMultiplier()              { return speedMultiplier; }
+    public void setSpeedMultiplier(double v)        { this.speedMultiplier = v; }
 
-    public String getParticleType() { return particleType; }
-    public void setParticleType(String v) { this.particleType = v; }
+    public String getParticleType()                 { return particleType; }
+    public void setParticleType(String v)           { this.particleType = v; cachedParticle = null; }
 
-    public double getParticleDensity() { return particleDensity; }
-    public void setParticleDensity(double v) { this.particleDensity = v; }
+    public double getParticleDensity()              { return particleDensity; }
+    public void setParticleDensity(double v)        { this.particleDensity = v; }
 
-    public String getAmbientEffect() { return ambientEffect; }
-    public void setAmbientEffect(String v) { this.ambientEffect = v; }
+    public String getAmbientEffect()                { return ambientEffect; }
+    public void setAmbientEffect(String v)          { this.ambientEffect = v; }
 
-    public String getClickEffect() { return clickEffect; }
-    public void setClickEffect(String v) { this.clickEffect = v; }
+    public String getClickEffect()                  { return clickEffect; }
+    public void setClickEffect(String v)            { this.clickEffect = v; }
 
-    public List<String> getPlayerCommands() { return playerCommands; }
-    public List<String> getConsoleCommands() { return consoleCommands; }
-    public List<String> getMessages() { return messages; }
+    public List<String> getPlayerCommands()         { return playerCommands; }
+    public List<String> getConsoleCommands()        { return consoleCommands; }
+    public List<String> getMessages()               { return messages; }
 
-    public int getCooldownSeconds() { return cooldownSeconds; }
-    public void setCooldownSeconds(int v) { this.cooldownSeconds = v; }
+    public int getCooldownSeconds()                 { return cooldownSeconds; }
+    public void setCooldownSeconds(int v)           { this.cooldownSeconds = v; }
 
-    public ArmorStand getSkullStand() { return skullStand; }
-    public void setSkullStand(ArmorStand s) { this.skullStand = s; }
+    public double getAnimTick()                     { return animTick; }
+    public void setAnimTick(double v)               { this.animTick = v; }
 
-    public List<TextDisplay> getHoloDisplays() { return holoDisplays; }
-
-    public Map<UUID, ArmorStand> getPersonalStands() { return personalStands; }
-
-    public double getAnimTick() { return animTick; }
-    public void setAnimTick(double v) { this.animTick = v; }
-
-    public double getBaseY() { return baseY; }
-    public void setBaseY(double v) { this.baseY = v; }
+    public double getBaseY()                        { return baseY; }
+    public void setBaseY(double v)                  { this.baseY = v; }
 }

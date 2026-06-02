@@ -174,10 +174,7 @@ public class PHCommand implements CommandExecutor, TabCompleter {
     private void cmdSetEnabled(CommandSender sender, String[] args, boolean enable) {
         if (args.length < 2) { msg(sender, "<yellow>Usage: /ph " + (enable ? "enable" : "disable") + " <id>"); return; }
         FloatingHead h = get(sender, args[1]); if (h == null) return;
-        h.setEnabled(enable);
-        if (enable) manager.getRenderer().spawnAll(h);
-        else manager.getRenderer().despawnAll(h);
-        manager.save(h);
+        if (enable) manager.enableHead(h); else manager.disableHead(h);
         msg(sender, "<white>" + h.getId() + "</white> " + (enable ? "<green>enabled" : "<red>disabled") + ".");
     }
 

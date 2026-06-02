@@ -4,11 +4,11 @@ import net.kyori.adventure.text.minimessage.MiniMessage;
 import nl.jdries.phantomheads.PhantomHeadsPlugin;
 import nl.jdries.phantomheads.animation.AnimationTask;
 import nl.jdries.phantomheads.model.FloatingHead;
-import nl.jdries.phantomheads.renderer.EntityRenderer;
+import nl.jdries.phantomheads.particle.ParticleEngine;
+import nl.jdries.phantomheads.renderer.PacketRenderer;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.configuration.file.YamlConfiguration;
-import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitTask;
 
@@ -17,54 +17,50 @@ import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Central manager: owns all FloatingHead instances, drives entity lifecycle,
- * manages per-player visibility, handles YAML persistence, and runs the
- * PlaceholderAPI hologram refresh task.
- */
 public class HeadManager {
 
     private static final MiniMessage MM = MiniMessage.miniMessage();
 
     private final PhantomHeadsPlugin plugin;
-    private final EntityRenderer renderer;
-    private final Map<String, FloatingHead> heads = new LinkedHashMap<>();
-    // head id → UUIDs of players currently seeing it
-    private final Map<String, Set<UUID>> viewers = new ConcurrentHashMap<>();
+    private final PacketRenderer renderer;
+    private final Map<String, FloatingHead> heads     = new LinkedHashMap<>();
+    private final Map<String, Set<UUID>>    viewers   = new ConcurrentHashMap<>();
+    // entity ID → head — used by PacketClickListener for O(1) click lookup
+    private final Map<Integer, FloatingHead> entityIndex = new ConcurrentHashMap<>();
 
-    private BukkitTask animationTask;
+    private BukkitTask animTask;
     private BukkitTask rangeTask;
-    private BukkitTask holoRefreshTask;
-
+    private BukkitTask holoTask;
     private File headsDir;
 
-    public HeadManager(PhantomHeadsPlugin plugin, EntityRenderer renderer) {
-        this.plugin = plugin;
+    public HeadManager(PhantomHeadsPlugin plugin, PacketRenderer renderer) {
+        this.plugin   = plugin;
         this.renderer = renderer;
         this.headsDir = new File(plugin.getDataFolder(), "heads");
         headsDir.mkdirs();
     }
 
-    // =========================================================================
-    // Lifecycle
-    // =========================================================================
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     public void loadAll() {
         heads.clear();
         viewers.clear();
+        entityIndex.clear();
         File[] files = headsDir.listFiles((d, n) -> n.endsWith(".yml"));
         if (files == null) return;
         for (File file : files) {
             String id = file.getName().replace(".yml", "");
-            YamlConfiguration cfg = YamlConfiguration.loadConfiguration(file);
-            FloatingHead head = FloatingHead.loadFrom(id, cfg);
+            FloatingHead head = FloatingHead.loadFrom(id, YamlConfiguration.loadConfiguration(file));
             heads.put(id, head);
         }
     }
 
     public void spawnAll() {
         for (FloatingHead head : heads.values()) {
-            if (head.isEnabled()) renderer.spawnAll(head);
+            if (head.isEnabled()) {
+                renderer.allocateIds(head);
+                indexHead(head);
+            }
         }
     }
 
@@ -73,18 +69,21 @@ public class HeadManager {
         int rangeRate = plugin.getConfig().getInt("range-check-interval", 20);
         int holoRate  = plugin.getConfig().getInt("hologram-refresh-interval", 40);
 
-        animationTask  = new AnimationTask(this).runTaskTimer(plugin, 0L, animRate);
-        rangeTask      = Bukkit.getScheduler().runTaskTimer(plugin, this::updateVisibility, 0L, rangeRate);
-        holoRefreshTask = Bukkit.getScheduler().runTaskTimer(plugin, this::refreshHologramsWithPapi, 0L, holoRate);
+        animTask  = new AnimationTask(this).runTaskTimer(plugin, 0L, animRate);
+        rangeTask = Bukkit.getScheduler().runTaskTimer(plugin, this::updateVisibility, 0L, rangeRate);
+        holoTask  = Bukkit.getScheduler().runTaskTimer(plugin, this::refreshPapi, 0L, holoRate);
     }
 
     public void shutdown() {
-        if (animationTask   != null) animationTask.cancel();
-        if (rangeTask       != null) rangeTask.cancel();
-        if (holoRefreshTask != null) holoRefreshTask.cancel();
-        for (FloatingHead head : heads.values()) renderer.despawnAll(head);
+        if (animTask  != null) animTask.cancel();
+        if (rangeTask != null) rangeTask.cancel();
+        if (holoTask  != null) holoTask.cancel();
+        for (FloatingHead head : heads.values()) {
+            renderer.despawnAll(head, getViewers(head));
+        }
         heads.clear();
         viewers.clear();
+        entityIndex.clear();
     }
 
     public void reload() {
@@ -97,9 +96,7 @@ public class HeadManager {
         startTasks();
     }
 
-    // =========================================================================
-    // CRUD
-    // =========================================================================
+    // ── CRUD ─────────────────────────────────────────────────────────────────
 
     public FloatingHead create(String id, Location loc, String texture) {
         FloatingHead head = new FloatingHead(id);
@@ -109,14 +106,16 @@ public class HeadManager {
         heads.put(id, head);
         viewers.put(id, new HashSet<>());
         save(head);
-        renderer.spawnAll(head);
+        renderer.allocateIds(head);
+        indexHead(head);
         return head;
     }
 
     public boolean delete(String id) {
         FloatingHead head = heads.remove(id);
         if (head == null) return false;
-        renderer.despawnAll(head);
+        renderer.despawnAll(head, getViewers(head));
+        unindexHead(head);
         viewers.remove(id);
         new File(headsDir, id + ".yml").delete();
         return true;
@@ -132,7 +131,8 @@ public class HeadManager {
         heads.put(newId, copy);
         viewers.put(newId, new HashSet<>());
         save(copy);
-        renderer.spawnAll(copy);
+        renderer.allocateIds(copy);
+        indexHead(copy);
         return copy;
     }
 
@@ -147,19 +147,59 @@ public class HeadManager {
         }
     }
 
-    // =========================================================================
-    // Visibility
-    // =========================================================================
+    // ── Enable / disable helpers (called by PHCommand) ────────────────────────
+
+    public void enableHead(FloatingHead head) {
+        head.setEnabled(true);
+        renderer.allocateIds(head);
+        indexHead(head);
+        save(head);
+    }
+
+    public void disableHead(FloatingHead head) {
+        head.setEnabled(false);
+        renderer.despawnAll(head, getViewers(head));
+        unindexHead(head);
+        viewers.getOrDefault(head.getId(), Collections.emptySet()).clear();
+        save(head);
+    }
+
+    // ── Click handling (called by PacketClickListener) ────────────────────────
+
+    public void handleEntityClick(Player player, int entityId) {
+        FloatingHead head = entityIndex.get(entityId);
+        if (head == null || !head.isEnabled()) return;
+
+        if (!player.hasPermission("phantomheads.use")) {
+            player.sendMessage(MM.deserialize("<red>You don't have permission to interact with this."));
+            return;
+        }
+        if (head.isOnCooldown(player.getUniqueId())) {
+            player.sendMessage(MM.deserialize("<yellow>Please wait before clicking that again."));
+            return;
+        }
+        head.markCooldown(player.getUniqueId());
+
+        ParticleEngine.spawnClick(head);
+
+        for (String cmd : head.getPlayerCommands())
+            Bukkit.dispatchCommand(player, replacePlaceholders(cmd, player));
+        for (String cmd : head.getConsoleCommands())
+            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), replacePlaceholders(cmd, player));
+        for (String msg : head.getMessages())
+            player.sendMessage(MM.deserialize(replacePlaceholders(msg, player)));
+    }
+
+    // ── Visibility range ─────────────────────────────────────────────────────
 
     private void updateVisibility() {
-        double range   = plugin.getConfig().getDouble("view-range", 48.0);
-        double rangeS  = range * range;
+        double range  = plugin.getConfig().getDouble("view-range", 48.0);
+        double range2 = range * range;
 
         for (FloatingHead head : heads.values()) {
             Set<UUID> current = viewers.computeIfAbsent(head.getId(), k -> new HashSet<>());
 
             if (!head.isEnabled()) {
-                // Hide from everyone if head is disabled
                 for (UUID uid : new HashSet<>(current)) {
                     Player p = Bukkit.getPlayer(uid);
                     if (p != null) renderer.hideFrom(head, p);
@@ -171,88 +211,100 @@ public class HeadManager {
             Location loc = head.getLocation();
             if (loc == null || loc.getWorld() == null) continue;
 
-            Set<UUID> newViewers = new HashSet<>();
-            for (Player player : loc.getWorld().getPlayers()) {
-                if (player.getLocation().distanceSquared(loc) <= rangeS) {
-                    newViewers.add(player.getUniqueId());
-                }
+            Set<UUID> inRange = new HashSet<>();
+            for (Player p : loc.getWorld().getPlayers()) {
+                if (p.getLocation().distanceSquared(loc) <= range2)
+                    inRange.add(p.getUniqueId());
             }
 
-            // Show to newly in-range players
-            for (UUID uid : newViewers) {
+            for (UUID uid : inRange) {
                 if (!current.contains(uid)) {
                     Player p = Bukkit.getPlayer(uid);
                     if (p != null) renderer.showTo(head, p);
                 }
             }
-
-            // Hide from players who left range
             for (UUID uid : new HashSet<>(current)) {
-                if (!newViewers.contains(uid)) {
+                if (!inRange.contains(uid)) {
                     Player p = Bukkit.getPlayer(uid);
                     if (p != null) renderer.hideFrom(head, p);
                 }
             }
-
-            viewers.put(head.getId(), newViewers);
+            viewers.put(head.getId(), inRange);
         }
     }
 
-    /**
-     * Periodically re-renders hologram lines through PlaceholderAPI so that
-     * live server statistics (e.g. top kills, economy balance) stay up to date.
-     * Uses the first available online player as PAPI context for server-level placeholders.
-     * Heads with no PAPI placeholders in their lines are skipped cheaply.
-     */
-    private void refreshHologramsWithPapi() {
-        if (!Bukkit.getPluginManager().isPluginEnabled("PlaceholderAPI")) return;
+    // ── PAPI refresh with change detection ───────────────────────────────────
 
-        // Use any online player as context for global/server placeholders
+    private void refreshPapi() {
+        if (!Bukkit.getPluginManager().isPluginEnabled("PlaceholderAPI")) return;
         Player ctx = Bukkit.getOnlinePlayers().stream().findFirst().orElse(null);
         if (ctx == null) return;
 
         for (FloatingHead head : heads.values()) {
             if (!head.isEnabled() || !head.isHologramEnabled()) continue;
             List<String> lines = head.getLines();
-
-            // Quick check: only process heads that have a % in their line text
             boolean hasPapi = lines.stream().anyMatch(l -> l.contains("%"));
             if (!hasPapi) continue;
 
-            for (int i = 0; i < lines.size() && i < head.getHoloDisplays().size(); i++) {
+            for (int i = 0; i < lines.size(); i++) {
                 String resolved = applyPapi(ctx, lines.get(i));
-                renderer.updateHoloText(head, i, resolved);
+                String cached   = head.getCachedResolvedLine(i);
+                // Only send the packet if the text actually changed
+                if (!resolved.equals(cached)) {
+                    head.setCachedResolvedLine(i, resolved);
+                    renderer.updateHoloText(head, i, resolved, getViewers(head));
+                }
             }
         }
     }
 
-    /** Applies PlaceholderAPI to a string via reflection (no compile-time dependency). */
+    /** Applies PlaceholderAPI via reflection (no compile-time dependency). */
     public static String applyPapi(Player player, String text) {
         try {
             Class<?> papi = Class.forName("me.clip.placeholderapi.PlaceholderAPI");
-            return (String) papi.getMethod("setPlaceholders", org.bukkit.OfflinePlayer.class, String.class)
-                    .invoke(null, player, text);
+            return (String) papi.getMethod("setPlaceholders",
+                    org.bukkit.OfflinePlayer.class, String.class).invoke(null, player, text);
         } catch (Exception ignored) {
             return text;
         }
     }
 
-    /** Called when a player quits — cleans up personal skull stands. */
     public void onPlayerQuit(Player player) {
         for (Map.Entry<String, Set<UUID>> entry : viewers.entrySet()) {
             if (entry.getValue().remove(player.getUniqueId())) {
                 FloatingHead head = heads.get(entry.getKey());
-                if (head != null) removePersonalStand(head, player);
+                if (head != null) {
+                    renderer.hideFrom(head, player);
+                    head.getPersonalEntityIds().remove(player.getUniqueId());
+                }
             }
         }
     }
 
-    private void removePersonalStand(FloatingHead head, Player player) {
-        ArmorStand personal = head.getPersonalStands().remove(player.getUniqueId());
-        if (personal != null && !personal.isDead()) personal.remove();
+    // ── Entity index helpers ─────────────────────────────────────────────────
+
+    private void indexHead(FloatingHead head) {
+        if (head.getSkullEntityId() != -1)
+            entityIndex.put(head.getSkullEntityId(), head);
+        for (int id : head.getHoloEntityIds())
+            entityIndex.put(id, head);
+        for (int id : head.getPersonalEntityIds().values())
+            entityIndex.put(id, head);
     }
 
-    /** Returns the live Player objects currently viewing a head. */
+    private void unindexHead(FloatingHead head) {
+        entityIndex.remove(head.getSkullEntityId());
+        head.getHoloEntityIds().forEach(entityIndex::remove);
+        head.getPersonalEntityIds().values().forEach(entityIndex::remove);
+    }
+
+    // ── Queries ───────────────────────────────────────────────────────────────
+
+    public FloatingHead get(String id)            { return heads.get(id); }
+    public boolean exists(String id)              { return heads.containsKey(id); }
+    public Collection<FloatingHead> getAllHeads()  { return heads.values(); }
+    public PacketRenderer getRenderer()           { return renderer; }
+
     public List<Player> getViewers(FloatingHead head) {
         Set<UUID> uids = viewers.getOrDefault(head.getId(), Collections.emptySet());
         List<Player> result = new ArrayList<>(uids.size());
@@ -262,14 +314,6 @@ public class HeadManager {
         }
         return result;
     }
-
-    // =========================================================================
-    // Queries
-    // =========================================================================
-
-    public FloatingHead get(String id) { return heads.get(id); }
-    public boolean exists(String id)   { return heads.containsKey(id); }
-    public Collection<FloatingHead> getAllHeads() { return heads.values(); }
 
     public List<FloatingHead> getNear(Location center, double radius) {
         double r2 = radius * radius;
@@ -282,11 +326,7 @@ public class HeadManager {
         return result;
     }
 
-    public EntityRenderer getRenderer() { return renderer; }
-
-    // =========================================================================
-    // Helpers
-    // =========================================================================
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     private void applyConfigDefaults(FloatingHead head) {
         head.setAnimationStyle(plugin.getConfig().getString("defaults.animation", "FLOATING"));
@@ -296,5 +336,12 @@ public class HeadManager {
         head.setAmbientEffect(plugin.getConfig().getString("defaults.ambient-effect", "circle"));
         head.setClickEffect(plugin.getConfig().getString("defaults.click-effect", "burst"));
         head.setCooldownSeconds(plugin.getConfig().getInt("defaults.cooldown", 3));
+    }
+
+    private String replacePlaceholders(String input, Player player) {
+        String result = input.replace("%player_name%", player.getName());
+        if (Bukkit.getPluginManager().isPluginEnabled("PlaceholderAPI"))
+            result = applyPapi(player, result);
+        return result;
     }
 }
