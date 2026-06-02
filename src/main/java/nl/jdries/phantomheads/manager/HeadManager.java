@@ -21,6 +21,10 @@ public class HeadManager {
 
     private static final MiniMessage MM = MiniMessage.miniMessage();
 
+    // Cached PAPI reflection method — Class.forName + getMethod is expensive, do it once
+    private static java.lang.reflect.Method PAPI_METHOD = null;
+    private static boolean PAPI_LOOKED_UP = false;
+
     private final PhantomHeadsPlugin plugin;
     private final PacketRenderer renderer;
     private final Map<String, FloatingHead> heads     = new LinkedHashMap<>();
@@ -32,6 +36,12 @@ public class HeadManager {
     private BukkitTask rangeTask;
     private BukkitTask holoTask;
     private File headsDir;
+
+    // Cached config values — re-read only on reload
+    private double viewRange  = 48.0;
+    private double viewRange2 = 48.0 * 48.0;
+    // Cached PlaceholderAPI availability — re-checked only on reload
+    private boolean papiAvailable = false;
 
     public HeadManager(PhantomHeadsPlugin plugin, PacketRenderer renderer) {
         this.plugin   = plugin;
@@ -65,6 +75,10 @@ public class HeadManager {
     }
 
     public void startTasks() {
+        viewRange     = plugin.getConfig().getDouble("view-range", 48.0);
+        viewRange2    = viewRange * viewRange;
+        papiAvailable = Bukkit.getPluginManager().isPluginEnabled("PlaceholderAPI");
+
         int animRate  = plugin.getConfig().getInt("animation-tick-rate", 1);
         int rangeRate = plugin.getConfig().getInt("range-check-interval", 20);
         int holoRate  = plugin.getConfig().getInt("hologram-refresh-interval", 40);
@@ -193,9 +207,6 @@ public class HeadManager {
     // ── Visibility range ─────────────────────────────────────────────────────
 
     private void updateVisibility() {
-        double range  = plugin.getConfig().getDouble("view-range", 48.0);
-        double range2 = range * range;
-
         for (FloatingHead head : heads.values()) {
             Set<UUID> current = viewers.computeIfAbsent(head.getId(), k -> new HashSet<>());
 
@@ -213,14 +224,21 @@ public class HeadManager {
 
             Set<UUID> inRange = new HashSet<>();
             for (Player p : loc.getWorld().getPlayers()) {
-                if (p.getLocation().distanceSquared(loc) <= range2)
+                if (p.getLocation().distanceSquared(loc) <= viewRange2)
                     inRange.add(p.getUniqueId());
             }
 
             for (UUID uid : inRange) {
                 if (!current.contains(uid)) {
                     Player p = Bukkit.getPlayer(uid);
-                    if (p != null) renderer.showTo(head, p);
+                    if (p != null) {
+                        renderer.showTo(head, p);
+                        // Dynamic heads create personal entity IDs lazily in showTo — index them now
+                        if (head.isDynamicTexture()) {
+                            Integer pid = head.getPersonalEntityIds().get(uid);
+                            if (pid != null) entityIndex.putIfAbsent(pid, head);
+                        }
+                    }
                 }
             }
             for (UUID uid : new HashSet<>(current)) {
@@ -236,34 +254,47 @@ public class HeadManager {
     // ── PAPI refresh with change detection ───────────────────────────────────
 
     private void refreshPapi() {
-        if (!Bukkit.getPluginManager().isPluginEnabled("PlaceholderAPI")) return;
-        Player ctx = Bukkit.getOnlinePlayers().stream().findFirst().orElse(null);
-        if (ctx == null) return;
+        if (!papiAvailable) return;
+        Collection<? extends Player> online = Bukkit.getOnlinePlayers();
+        if (online.isEmpty()) return;
+        Player ctx = online.iterator().next();
 
         for (FloatingHead head : heads.values()) {
             if (!head.isEnabled() || !head.isHologramEnabled()) continue;
             List<String> lines = head.getLines();
-            boolean hasPapi = lines.stream().anyMatch(l -> l.contains("%"));
+
+            boolean hasPapi = false;
+            for (String line : lines) { if (line.contains("%")) { hasPapi = true; break; } }
             if (!hasPapi) continue;
 
+            List<Player> headViewers = getViewers(head);
             for (int i = 0; i < lines.size(); i++) {
                 String resolved = applyPapi(ctx, lines.get(i));
                 String cached   = head.getCachedResolvedLine(i);
-                // Only send the packet if the text actually changed
                 if (!resolved.equals(cached)) {
                     head.setCachedResolvedLine(i, resolved);
-                    renderer.updateHoloText(head, i, resolved, getViewers(head));
+                    renderer.updateHoloText(head, i, resolved, headViewers);
                 }
             }
         }
     }
 
-    /** Applies PlaceholderAPI via reflection (no compile-time dependency). */
+    /**
+     * Applies PlaceholderAPI via reflection. The Method is cached after the first call —
+     * Class.forName + getMethod on every invocation was a significant overhead.
+     */
     public static String applyPapi(Player player, String text) {
+        if (!PAPI_LOOKED_UP) {
+            try {
+                Class<?> cls = Class.forName("me.clip.placeholderapi.PlaceholderAPI");
+                PAPI_METHOD = cls.getMethod("setPlaceholders",
+                        org.bukkit.OfflinePlayer.class, String.class);
+            } catch (Exception ignored) {}
+            PAPI_LOOKED_UP = true;
+        }
+        if (PAPI_METHOD == null) return text;
         try {
-            Class<?> papi = Class.forName("me.clip.placeholderapi.PlaceholderAPI");
-            return (String) papi.getMethod("setPlaceholders",
-                    org.bukkit.OfflinePlayer.class, String.class).invoke(null, player, text);
+            return (String) PAPI_METHOD.invoke(null, player, text);
         } catch (Exception ignored) {
             return text;
         }
@@ -340,8 +371,7 @@ public class HeadManager {
 
     private String replacePlaceholders(String input, Player player) {
         String result = input.replace("%player_name%", player.getName());
-        if (Bukkit.getPluginManager().isPluginEnabled("PlaceholderAPI"))
-            result = applyPapi(player, result);
+        if (papiAvailable) result = applyPapi(player, result);
         return result;
     }
 }

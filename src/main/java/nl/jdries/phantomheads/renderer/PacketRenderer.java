@@ -16,7 +16,6 @@ import nl.jdries.phantomheads.model.FloatingHead;
 import nl.jdries.phantomheads.util.TextureUtil;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
-import org.bukkit.inventory.ItemStack;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -78,8 +77,7 @@ public class PacketRenderer {
                     player.getUniqueId(), k -> nextId());
             sendSkullSpawn(player, id, loc, TextureUtil.skullFromPlayer(player));
         } else if (head.getSkullEntityId() != -1) {
-            sendSkullSpawn(player, head.getSkullEntityId(), loc,
-                    TextureUtil.skullFromBase64(head.getTexture()));
+            sendSkullSpawn(player, head.getSkullEntityId(), loc, head.getOrCreateSkullItem());
         }
 
         if (head.isHologramEnabled()) {
@@ -118,17 +116,15 @@ public class PacketRenderer {
     }
 
     /** Teleports all entities of a head to a new location for the given viewers. */
-    public void teleport(FloatingHead head, Location loc, Iterable<Player> viewers) {
-        List<Player> viewerList = new ArrayList<>();
-        viewers.forEach(viewerList::add);
-        if (viewerList.isEmpty()) return;
+    public void teleport(FloatingHead head, Location loc, List<Player> viewers) {
+        if (viewers.isEmpty()) return;
 
         Vector3d pos = toVec(loc);
 
         if (!head.isDynamicTexture() && head.getSkullEntityId() != -1) {
             PacketWrapper<?> tp = buildTeleport(head.getSkullEntityId(), pos, loc.getYaw());
             PacketWrapper<?> hl = new WrapperPlayServerEntityHeadLook(head.getSkullEntityId(), loc.getYaw());
-            for (Player p : viewerList) { send(p, tp); send(p, hl); }
+            for (Player p : viewers) { send(p, tp); send(p, hl); }
         }
 
         for (Map.Entry<UUID, Integer> e : head.getPersonalEntityIds().entrySet()) {
@@ -144,7 +140,7 @@ public class PacketRenderer {
         for (int i = 0; i < holoIds.size(); i++) {
             Vector3d holoPos = new Vector3d(loc.getX(), loc.getY() + HOLO_BASE_OFFSET + i * LINE_GAP, loc.getZ());
             PacketWrapper<?> tp = buildTeleport(holoIds.get(i), holoPos, 0f);
-            for (Player p : viewerList) send(p, tp);
+            for (Player p : viewers) send(p, tp);
         }
     }
 
@@ -273,7 +269,8 @@ public class PacketRenderer {
     }
 
     private void sendDestroy(Player player, List<Integer> ids) {
-        int[] arr = ids.stream().mapToInt(Integer::intValue).toArray();
+        int[] arr = new int[ids.size()];
+        for (int i = 0; i < ids.size(); i++) arr[i] = ids.get(i);
         send(player, new WrapperPlayServerDestroyEntities(arr));
     }
 

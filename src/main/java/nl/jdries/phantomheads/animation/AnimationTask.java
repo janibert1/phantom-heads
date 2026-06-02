@@ -36,14 +36,15 @@ public class AnimationTask extends BukkitRunnable {
             head.setAnimTick(tick + 1);
 
             List<Player> viewers = manager.getViewers(head);
+            // No viewers — advance the tick counter but skip all location/packet work
+            if (viewers.isEmpty()) continue;
 
             switch (head.getAnimationStyle().toUpperCase()) {
                 case "SLERPING" -> animateSlerp(head, tick, speed, viewers);
                 default         -> animateFloat(head, tick, speed, viewers);
             }
 
-            // Particles every 4 ticks — no point spawning when nobody can see them
-            if (!viewers.isEmpty() && ((long) tick & 3) == 0) {
+            if (((long) tick & 3) == 0) {
                 ParticleEngine.spawnAmbient(head, tick * speed * 0.1, viewers);
             }
         }

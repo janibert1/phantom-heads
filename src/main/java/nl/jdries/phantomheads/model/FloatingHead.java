@@ -45,6 +45,8 @@ public class FloatingHead {
     private transient final List<String> cachedResolvedLines = new ArrayList<>();
     // Resolved Particle enum, cached once on load/create so it's not looked up every tick
     private transient Particle cachedParticle = null;
+    // Cached skull ItemStack for static (non-dynamic) textures — recreated only on texture change
+    private transient org.bukkit.inventory.ItemStack cachedSkullItem = null;
 
     public FloatingHead(String id) {
         this.id = id;
@@ -114,8 +116,15 @@ public class FloatingHead {
 
     // --- Particle cache ---
 
-    public Particle getCachedParticle()             { return cachedParticle; }
+    public Particle getCachedParticle()              { return cachedParticle; }
     public void setCachedParticle(Particle particle) { this.cachedParticle = particle; }
+
+    // --- Skull item cache (static textures only) ---
+
+    public org.bukkit.inventory.ItemStack getOrCreateSkullItem() {
+        if (cachedSkullItem == null) cachedSkullItem = nl.jdries.phantomheads.util.TextureUtil.skullFromBase64(texture);
+        return cachedSkullItem;
+    }
 
     // --- YAML persistence ---
 
@@ -176,7 +185,7 @@ public class FloatingHead {
     public float getYaw()       { return yaw; }
 
     public String getTexture()              { return texture; }
-    public void setTexture(String texture)  { this.texture = texture; }
+    public void setTexture(String texture)  { this.texture = texture; cachedSkullItem = null; }
 
     public boolean isEnabled()              { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
