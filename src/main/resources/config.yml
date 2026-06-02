@@ -1,0 +1,13 @@
+view-range: 48.0
+animation-tick-rate: 1
+range-check-interval: 20
+hologram-refresh-interval: 40
+
+defaults:
+  animation: FLOATING
+  speed-multiplier: 1.0
+  particle-type: FLAME
+  particle-density: 1.0
+  ambient-effect: circle
+  click-effect: burst
+  cooldown: 3

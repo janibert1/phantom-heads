@@ -1,0 +1,22 @@
+name: PhantomHeads
+version: 1.0.0
+main: nl.jdries.phantomheads.PhantomHeadsPlugin
+api-version: '1.21'
+description: Virtual floating skull NPCs with holograms, particles, and click interactions
+author: jdries
+softdepend:
+  - PlaceholderAPI
+
+commands:
+  ph:
+    description: PhantomHeads management command
+    usage: /ph <subcommand>
+    permission: phantomheads.admin
+
+permissions:
+  phantomheads.admin:
+    description: Full access to PhantomHeads management
+    default: op
+  phantomheads.use:
+    description: Ability to click and interact with heads
+    default: true
