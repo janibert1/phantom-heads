@@ -16,6 +16,7 @@ import nl.jdries.phantomheads.model.FloatingHead;
 import nl.jdries.phantomheads.util.TextureUtil;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
