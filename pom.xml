@@ -6,7 +6,7 @@
 
     <groupId>nl.jdries</groupId>
     <artifactId>phantom-heads</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.1</version>
     <packaging>jar</packaging>
 
     <properties>
