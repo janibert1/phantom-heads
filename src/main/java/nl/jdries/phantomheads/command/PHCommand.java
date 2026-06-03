@@ -201,7 +201,7 @@ public class PHCommand implements CommandExecutor, TabCompleter {
         if (args.length < 2) { msg(sender, "<yellow>Usage: /ph movehere <id>"); return; }
         FloatingHead h = get(sender, args[1]); if (h == null) return;
         h.setLocation(p.getLocation());
-        manager.getRenderer().teleportEntities(h, p.getLocation());
+        manager.getRenderer().teleport(h, p.getLocation(), manager.getViewers(h));
         manager.save(h);
         msg(sender, "<white>" + h.getId() + "</white> moved to your location.");
     }
