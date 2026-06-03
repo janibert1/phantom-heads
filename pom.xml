@@ -32,10 +32,10 @@
             <version>1.21.11-R0.1-SNAPSHOT</version>
             <scope>provided</scope>
         </dependency>
-        <!-- PacketEvents — shaded + relocated to avoid conflicts with GrimAC's bundled copy -->
+        <!-- PacketEvents spigot module — shaded + relocated to avoid conflicts with GrimAC -->
         <dependency>
-            <groupId>com.github.retrooper</groupId>
-            <artifactId>packetevents</artifactId>
+            <groupId>com.github.retrooper.packetevents</groupId>
+            <artifactId>packetevents-spigot</artifactId>
             <version>v2.12.2</version>
             <scope>compile</scope>
         </dependency>
