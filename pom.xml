@@ -34,9 +34,9 @@
         </dependency>
         <!-- PacketEvents — shaded + relocated to avoid conflicts with GrimAC's bundled copy -->
         <dependency>
-            <groupId>com.github.retrooper.packetevents</groupId>
-            <artifactId>spigot</artifactId>
-            <version>v2.8.0</version>
+            <groupId>com.github.retrooper</groupId>
+            <artifactId>packetevents</artifactId>
+            <version>v2.12.2</version>
             <scope>compile</scope>
         </dependency>
     </dependencies>
